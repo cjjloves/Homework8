@@ -5,8 +5,32 @@
 &emsp;&emsp;就Spark数据处理的逻辑核心而言。Spark对数据的处理基于内存的弹性分布式数据集（RDD），该设计使得计算的中间结果保存在内存而非磁盘上，从而因避免了磁盘读取而大大提高了处理性能。同时，RDD还能很好地支持迭代计算的处理问题，比如一组RDD形成可执行的有向无环图DAG，构成灵活的计算流图。  
 &emsp;&emsp;就Spark的特性而言。Spark计算模式具有众多突出特性，其默认使用函数式语言Scala，大大减少了编码量，同时，其还支持多种编程语言如Python、Java、R等。Spark同时具备SQL、流处理、复杂分析和机器学习等功能，用户可以在使用Spark的过程中“无缝结合”这些工程。此外，Spark具有通用性，同一个Spark程序可以在多种模式（如单机模式、伪分布模式、集群模式等）或多种生态系统（如Hadoop生态系统）下正常运行。
 ## 2. 对比Hadoop和Spark
-### Hadoop与Spark的主要区别在于，Hadoop使用持久（本地化）存储，Spark使用弹性分布式数据集。  
+### Hadoop与Spark的主要区别在于，Hadoop使用持久（本地化）存储，Spark使用弹性分布式数据集（RDD）。  
 &emsp;&emsp;就性能和中间数据存放位置而言，Hadoop需要把MapReduce得到的计算结果存放在硬盘上，哪怕该计算结果仅为任务中的中间结果；而Spark将任务的中间数据存放在内存中，避免了内存再次读取硬盘上的数据，大大提高了任务处理速度。如Spark支持DAG图的分布式并行计算，具体实现是通过一组RDD形成可执行的有向无环图，构成灵活的计算流图，避免了中间数据落地；而Hadoop则需要通过多个MapReduce过程进行读写硬盘处理。  
 &emsp;&emsp;就容错性而言，Spark引入了RDD抽象，它是分布在一组节点中的只读对象集合，这些集合是弹性的，即Spark系统通过血统关系（lineage）来记录一个RDD是如何通过其他一个或者多个父类RDD转变过来的，当这个RDD的数据丢失时，Spark可以通过它父类的的RDD重新计算，从而实现数据的可靠性。相比而言，Hadoop只通过Namenode和datanode保证任务不出错，但无法保证磁盘上存储的数据的鲁棒性。  
 &emsp;&emsp;就功能范围而言，Spark更加通用。在Hadoop中，一个Job只有Map和Reduce两个阶段，复杂的计算需要大量的Job来完成，Job之间的依赖关系是由开发者自己管理的；Spark提供的数据集操作更多，另外各个处理节点之间的通信模型不再像Hadoop只有Shuffle一种，用户可以命名、物化、控制中间结果的存储、分区等，复杂的计算也可以通过一组RDD形成可执行的有向无环图来进行流计算。
 ## 3. 简述Spark的技术特点
+### 1.RDD
+&emsp;&emsp;Spark提出的弹性分布式数据集，是Spark最核心的分布式数据抽象。每一个RDD都具有一个分区（partition）列表，用于并行计算；一个函数作用在一个分区上，即RDD上的每一个分区都应用这个函数；RDD之间具有依赖性（宽依赖或窄依赖），但不是所有RDD之间都具有依赖性。Spark的很多特性都与RDD密不可分，例如通过RDD存储中间数据，减少了迭代过程中数据的落地，提高了处理效率。  
+### 2.Transformation & Aciton
+&emsp;&emsp;Spark通过RDD的两种不同类型的运算实现了惰性计算（目的为最小化计算机要做的工作），即在RDD的Transmation运算时，Spark并没有进行作业的提交；而在RDD的Action操作时才会触发Sparkcontext提交作业。  
+&emsp;&emsp;Transformation用于对RDD的创建（RDD只能使用Transformation创建）同时还提供大量操作方法，包括map，filter，groupBy，join等，RDD利用这些操作生成新的RDD，但是需要注意，无论多少次Transformation，RDD在真正数据计算Action之前都不可能真正运行。  
+&emsp;&emsp;Action是数据执行部分，其通过执行count，reduce，collect等方法真正执行数据的计算部分。实际上，RDD中所有的操作都是在惰性模式下，运行在编译中不会立即计算最终结果，而是记住所有操作步骤和方法，只有显示的遇到启动命令Action时才执行。这样做的好处在于大部分前期工作在Transformation时已经完成，当Action工作时，只需要利用全部资源完成业务的核心工作。
+### 3.Lineage
+&emsp;&emsp;为了保证RDD中数据的鲁棒性，Spark通过血统关系来记录一个RDD是如何通过其他一个或多个父类RDD转变过来的。相比其它系统的细粒度的内存数据更新级别的备份或者LOG机制，RDD的血统关系记录的是粗粒度的特定数据变换（Transformation）操作（filter, map, join etc.)行为。当这个RDD的部分分区数据丢失时，它可以通过血统关系获取足够的信息来重新运算和恢复丢失的数据分区。这种粗颗粒的数据模型，限制了Spark的运用场合，但同时相比细颗粒度的数据模型，也带来了性能的提升。
+### 4.Spark调度
+&emsp;&emsp;Spark采用了事件驱动的Scala库类akka来完成任务的启动，通过复用线程池的方式来取代MapReduce进程或者线程启动和切换的开销。  
+&emsp;&emsp;线程池：基本思想是一种对象池的思想，即开辟一块内存空间，里面存放了众多(未死亡)的线程，池中线程执行调度由池管理器来处理。当有线程任务时，从池中取一个，执行完成后线程对象归池，这样可以避免反复创建线程对象所带来的性能开销，节省了系统的资源。
+### 5.API
+&emsp;&emsp;Spark使用默认语言Scala进行开发，由于Scala作为函数式语言，编写Spark程序比编写MapReduce程序要简洁得多。同时，Spark也支持使用Python、Java、R等语言进行开发。
+### 6.Spark生态
+&emsp;&emsp;围绕Spark形成的由批处理（Spark Core）、交互式（Spark SQL）、流式（Spark Streaming）、机器学习（MLlib）、图计算（GraphX）形成的统一数据处理平台，为Spark应用提供了丰富的场景和模型，适用了不同的计算模式和计算任务。
+### 7.Spark部署
+&emsp;&emsp;同一个Spark可以在任意机器上运行（runs everywhere）。Spark拥有Standalone、Mesos、YARN等多种部署方式，可以部署在多种底层平台上，如基于Hadoop的底层平台上。
+### 8.适合多次操作数据集
+&emsp;&emsp;适用于需要多次操作特定数据集的应用场合。需要反复操作的次数越多，所需读取的数据量越大，收益越大，数据量小但是计算密集度大的场合，受益就相对较小。
+### 9.粗粒度操作
+&emsp;&emsp;由于RDD利用血统关系来保持鲁棒性的特性，Spark不适用于那些异步细粒度更新状态的应用，例如Web服务的存储或者是增量的Web爬虫和索引，即不适合于增量修改的应用模型。
+### 10.数据实时处理功能
+&emsp;&emsp;相比MapReduce基于磁盘的批量处理引擎，Spark赖以成名之处是其数据实时处理过程。对于数据量不是特别大，但是要求实时统计分析需求的问题，使用Spark更好。
+### 综上所述，Spark是一种基于内存的迭代式的分布式计算框架，适合完成一些迭代式、关系查询、流式处理等计算密集型任务。
